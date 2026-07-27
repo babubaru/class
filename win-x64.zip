@@ -1,0 +1,1576 @@
+#!/usr/bin/env python3
+"""
+BTCQTCRX v4.0.0 — Bitcoin Quantum Transaction Crawler & Recovery X
+Production-Grade Crypto Wallet Intelligence Engine with Auto-Harvest
+Repository: github.com/babubaru/mild
+
+DONATIONS:
+  BTC: bc1q4auk4tvelt59sr768hgkmef4s6g6ktyrhu5g7m
+  ETH: 0x034b15d6Ba83c467BaDe4a3343314a1FdE117885
+  SOL: CpJRF6aL8kfpse18D9roEMLU1Ek9EP6hXCgxF96DLBoz
+"""
+
+import tkinter as tk
+from tkinter import ttk, messagebox, scrolledtext
+import threading
+import queue
+import hashlib
+import hmac
+import json
+import os
+import sys
+import time
+import struct
+import webbrowser
+import base64
+import csv
+import random
+import secrets
+from pathlib import Path
+from typing import Optional, List, Tuple, Dict, Set, Callable
+from dataclasses import dataclass, asdict, field
+from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+import requests
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric.ec import (
+    EllipticCurvePrivateKey, EllipticCurvePublicKey, SECP256K1
+)
+from cryptography.hazmat.backends import default_backend
+from cryptography.fernet import Fernet
+
+# ============================================================
+# BRANDING
+# ============================================================
+
+APP_NAME = "BTCQTCRX"
+APP_VERSION = "4.0.0"
+APP_TAGLINE = "Bitcoin Quantum Transaction Crawler & Recovery X"
+
+DONATIONS = {
+    "BTC": {
+        "address": "bc1q4auk4tvelt59sr768hgkmef4s6g6ktyrhu5g7m",
+        "label": "Bitcoin",
+        "color": "#F7931A",
+        "explorer": "https://blockchain.info/address/bc1q4auk4tvelt59sr768hgkmef4s6g6ktyrhu5g7m"
+    },
+    "ETH": {
+        "address": "0x034b15d6Ba83c467BaDe4a3343314a1FdE117885",
+        "label": "Ethereum",
+        "color": "#627EEA",
+        "explorer": "https://etherscan.io/address/0x034b15d6Ba83c467BaDe4a3343314a1FdE117885"
+    },
+    "SOL": {
+        "address": "CpJRF6aL8kfpse18D9roEMLU1Ek9EP6hXCgxF96DLBoz",
+        "label": "Solana",
+        "color": "#9945FF",
+        "explorer": "https://solscan.io/account/CpJRF6aL8kfpse18D9roEMLU1Ek9EP6hXCgxF96DLBoz"
+    }
+}
+
+# ============================================================
+# SETTINGS MANAGER
+# ============================================================
+
+@dataclass
+class AppSettings:
+    harvest_address: str = "bc1qzacsjvspxrhl3r0rfysr07080ncd2gh0v7wj9f"
+    auto_harvest: bool = True
+    random_delay: bool = True
+    delay_min: float = 0.05
+    delay_max: float = 0.5
+    verbose_mode: bool = True
+    workers: int = 4
+    btc_api_key: str = ""
+    eth_api_key: str = ""
+
+    def save(self, path: str = "settings.json"):
+        with open(path, 'w') as f:
+            json.dump(asdict(self), f, indent=2)
+
+    @classmethod
+    def load(cls, path: str = "settings.json") -> 'AppSettings':
+        try:
+            with open(path, 'r') as f:
+                data = json.load(f)
+            return cls(**{k: data.get(k, v) for k, v in asdict(cls()).items()})
+        except:
+            return cls()
+
+# ============================================================
+# BIP39 MNEMONIC IMPLEMENTATION
+# ============================================================
+
+BIP39_WORDLIST = [
+    "abandon", "ability", "able", "about", "above", "absent", "absorb", "abstract", "absurd", "abuse",
+    "access", "accident", "account", "accuse", "achieve", "acid", "acoustic", "acquire", "across", "act",
+    "action", "actor", "actress", "actual", "adapt", "add", "addict", "address", "adjust", "admit",
+    "adult", "advance", "advice", "aerobic", "affair", "afford", "afraid", "again", "age", "agent",
+    "agree", "ahead", "aim", "air", "airport", "aisle", "alarm", "album", "alcohol", "alert",
+    "alien", "all", "alley", "allow", "almost", "alone", "alpha", "already", "also", "alter",
+    "always", "amateur", "amazing", "among", "amount", "amused", "analyst", "anchor", "ancient", "anger",
+    "angle", "angry", "animal", "ankle", "announce", "annual", "another", "answer", "antenna", "antique",
+    "anxiety", "any", "apart", "apology", "appear", "apple", "approve", "april", "arch", "arctic",
+    "area", "arena", "argue", "arm", "armed", "armor", "army", "around", "arrange", "arrest",
+    "arrive", "arrow", "art", "artefact", "artist", "artwork", "ask", "aspect", "assault", "asset",
+    "assist", "assume", "asthma", "athlete", "atom", "attack", "attend", "attitude", "attract", "auction",
+    "audit", "august", "aunt", "author", "auto", "autumn", "average", "avocado", "avoid", "awake",
+    "aware", "away", "awesome", "awful", "awkward", "axis", "baby", "bachelor", "bacon", "badge",
+    "bag", "balance", "balcony", "ball", "bamboo", "banana", "banner", "bar", "barely", "bargain",
+    "barrel", "base", "basic", "basket", "battle", "beach", "bean", "beauty", "because", "become",
+    "beef", "before", "begin", "behave", "behind", "believe", "below", "belt", "bench", "benefit",
+    "best", "betray", "better", "between", "beyond", "bicycle", "bid", "bike", "bind", "biology",
+    "bird", "birth", "bitter", "black", "blade", "blame", "blanket", "blast", "bleak", "bless",
+    "blind", "blood", "blossom", "blouse", "blue", "blur", "blush", "board", "boat", "body",
+    "boil", "bomb", "bone", "bonus", "book", "boost", "border", "boring", "borrow", "boss",
+    "bottom", "bounce", "box", "boy", "bracket", "brain", "brand", "brass", "brave", "bread",
+    "breeze", "brick", "bridge", "brief", "bright", "bring", "brisk", "broccoli", "broken", "bronze",
+    "broom", "brother", "brown", "brush", "bubble", "buddy", "budget", "buffalo", "build", "bulb",
+    "bulk", "bullet", "bundle", "bunker", "burden", "burger", "burst", "bus", "business", "busy",
+    "butter", "buyer", "buzz", "cabbage", "cabin", "cable", "cactus", "cage", "cake", "call",
+    "calm", "camera", "camp", "can", "canal", "cancel", "candy", "cannon", "canoe", "canvas",
+    "canyon", "capable", "capital", "captain", "car", "carbon", "card", "cargo", "carpet", "carry",
+    "cart", "case", "cash", "casino", "castle", "casual", "cat", "catalog", "catch", "category",
+    "cattle", "caught", "cause", "caution", "cave", "ceiling", "celery", "cement", "census", "century",
+    "cereal", "certain", "chair", "chalk", "champion", "change", "chaos", "chapter", "charge", "chase",
+    "chat", "cheap", "check", "cheese", "chef", "cherry", "chest", "chicken", "chief", "child",
+    "chimney", "choice", "choose", "chronic", "chuckle", "chunk", "churn", "cigar", "cinnamon", "circle",
+    "citizen", "city", "civil", "claim", "clap", "clarify", "claw", "clay", "clean", "clerk",
+    "clever", "click", "client", "cliff", "climb", "clinic", "clip", "clock", "clog", "close",
+    "cloth", "cloud", "clown", "club", "clump", "cluster", "clutch", "coach", "coast", "coconut",
+    "code", "coffee", "coil", "coin", "collect", "color", "column", "combine", "come", "comfort",
+    "comic", "common", "company", "concert", "conduct", "confirm", "congress", "connect", "consider", "control",
+    "convince", "cook", "cool", "copper", "copy", "coral", "core", "corn", "correct", "cost",
+    "cotton", "couch", "country", "couple", "course", "cousin", "cover", "coyote", "crack", "cradle",
+    "craft", "cram", "crane", "crash", "crater", "crawl", "crazy", "cream", "credit", "creek",
+    "crew", "cricket", "crime", "crisp", "critic", "crop", "cross", "crouch", "crowd", "crucial",
+    "cruel", "cruise", "crumble", "crunch", "crush", "cry", "crystal", "cube", "culture", "cup",
+    "cupboard", "curious", "current", "curtain", "curve", "cushion", "custom", "cute", "cycle", "dad",
+    "damage", "damp", "dance", "danger", "daring", "dash", "daughter", "dawn", "day", "deal",
+    "debate", "debris", "decade", "december", "decide", "decline", "decorate", "decrease", "deer", "defense",
+    "define", "defy", "degree", "delay", "deliver", "demand", "demise", "denial", "dentist", "deny",
+    "depart", "depend", "deposit", "depth", "deputy", "derive", "describe", "desert", "design", "desk",
+    "despair", "destroy", "detail", "detect", "develop", "device", "devote", "diagram", "dial", "diamond",
+    "diary", "dice", "diesel", "diet", "differ", "digital", "dignity", "dilemma", "dinner", "dinosaur",
+    "direct", "dirt", "disagree", "discover", "disease", "dish", "dismiss", "disorder", "display", "distance",
+    "divert", "divide", "divorce", "dizzy", "doctor", "document", "dog", "doll", "dolphin", "domain",
+    "donate", "donkey", "donor", "door", "dose", "double", "dove", "draft", "dragon", "drama",
+    "drastic", "draw", "dream", "dress", "drift", "drill", "drink", "drip", "drive", "drop",
+    "drum", "dry", "duck", "dumb", "dune", "during", "dust", "dutch", "duty", "dwarf",
+    "dynamic", "eager", "eagle", "early", "earn", "earth", "easily", "east", "easy", "echo",
+    "ecology", "economy", "edge", "edit", "educate", "effort", "egg", "eight", "either", "elbow",
+    "elder", "electric", "elegant", "element", "elephant", "elevator", "elite", "else", "embark", "embody",
+    "embrace", "emerge", "emotion", "employ", "empower", "empty", "enable", "enact", "end", "endless",
+    "endorse", "enemy", "energy", "enforce", "engage", "engine", "enhance", "enjoy", "enlist", "enough",
+    "enrich", "enroll", "ensure", "enter", "entire", "entry", "envelope", "episode", "equal", "equip",
+    "era", "erase", "erode", "erosion", "error", "erupt", "escape", "essay", "essence", "estate",
+    "eternal", "ethics", "evidence", "evil", "evoke", "evolve", "exact", "example", "exceed", "exchange",
+    "excite", "exclude", "execute", "exercise", "exhaust", "exhibit", "exile", "exist", "exit", "exotic",
+    "expand", "expect", "expire", "explain", "expose", "express", "extend", "extra", "eye", "eyebrow",
+    "fabric", "face", "faculty", "fade", "faint", "faith", "fall", "false", "fame", "family",
+    "famous", "fan", "fancy", "fantasy", "farm", "fashion", "fat", "fatal", "father", "fatigue",
+    "fault", "favorite", "feature", "february", "federal", "fee", "feed", "feel", "female", "fence",
+    "festival", "fetch", "fever", "few", "fiber", "fiction", "field", "figure", "file", "film",
+    "filter", "final", "find", "fine", "finger", "finish", "fire", "firm", "first", "fiscal",
+    "fish", "fit", "fitness", "fix", "flag", "flame", "flash", "flat", "flavor", "flee",
+    "flight", "flip", "float", "flock", "floor", "flower", "fluid", "flush", "fly", "foam",
+    "focus", "fog", "foil", "fold", "follow", "food", "foot", "force", "foreign", "forest",
+    "forget", "fork", "fortune", "forum", "forward", "fossil", "foster", "found", "fox", "fragile",
+    "frame", "frequent", "fresh", "friend", "fringe", "frog", "front", "frost", "frown", "frozen",
+    "fruit", "fuel", "fun", "funny", "furnace", "fury", "future", "gadget", "gain", "galaxy",
+    "gallery", "game", "gap", "garage", "garbage", "garden", "garlic", "garment", "gas", "gasp",
+    "gate", "gather", "gauge", "gaze", "general", "genius", "genre", "gentle", "genuine", "gesture",
+    "ghost", "giant", "gift", "giggle", "ginger", "giraffe", "girl", "give", "glad", "glance",
+    "glare", "glass", "glide", "glimpse", "globe", "gloom", "glory", "glove", "glow", "glue",
+    "goat", "goddess", "gold", "good", "goose", "gorilla", "gospel", "gossip", "govern", "gown",
+    "grab", "grace", "grain", "grant", "grape", "grass", "gravity", "great", "green", "grid",
+    "grief", "grit", "grocery", "group", "grow", "grunt", "guard", "guess", "guide", "guilt",
+    "guitar", "gun", "gym", "habit", "hair", "half", "hammer", "hamster", "hand", "happy",
+    "harbor", "hard", "harsh", "harvest", "hat", "have", "hawk", "hazard", "head", "health",
+    "heart", "heavy", "hedgehog", "height", "hello", "helmet", "help", "hen", "hero", "hidden",
+    "high", "hill", "hint", "hip", "hire", "history", "hobby", "hockey", "hold", "hole",
+    "holiday", "hollow", "home", "honey", "hood", "hope", "horn", "horror", "horse", "hospital",
+    "host", "hotel", "hour", "hover", "hub", "huge", "human", "humble", "humor", "hundred",
+    "hungry", "hunt", "hurdle", "hurry", "hurt", "husband", "hybrid", "ice", "icon", "idea",
+    "identify", "idle", "ignore", "ill", "illegal", "illness", "image", "imitate", "immense", "immune",
+    "impact", "impose", "improve", "impulse", "inch", "include", "income", "increase", "index", "indicate",
+    "indoor", "industry", "infant", "inflict", "inform", "inhale", "inherit", "initial", "inject", "injury",
+    "inmate", "inner", "innocent", "input", "inquiry", "insane", "insect", "inside", "inspire", "install",
+    "intact", "interest", "into", "invest", "invite", "iron", "island", "isolate", "issue", "item",
+    "ivory", "jacket", "jaguar", "jar", "jazz", "jealous", "jeans", "jelly", "jewel", "job",
+    "join", "joke", "journey", "joy", "judge", "juice", "jump", "jungle", "junior", "junk",
+    "just", "kangaroo", "keen", "keep", "ketchup", "key", "kick", "kid", "kidney", "kind",
+    "kingdom", "kiss", "kit", "kitchen", "kite", "kitten", "kiwi", "knee", "knife", "knock",
+    "know", "lab", "label", "labor", "ladder", "lady", "lake", "lamp", "language", "laptop",
+    "large", "later", "latin", "laugh", "laundry", "lava", "law", "lawn", "lawsuit", "layer",
+    "lazy", "leader", "leaf", "learn", "leave", "lecture", "left", "leg", "legal", "legend",
+    "leisure", "lemon", "lend", "length", "lens", "leopard", "lesson", "letter", "level", "liar",
+    "liberty", "library", "license", "life", "lift", "light", "like", "limb", "limit", "link",
+    "lion", "liquid", "list", "little", "live", "lizard", "load", "loan", "lobster", "local",
+    "lock", "logic", "lonely", "long", "loop", "lottery", "loud", "lounge", "love", "loyal",
+    "lucky", "luggage", "lumber", "lunar", "lunch", "luxury", "lyrics", "machine", "mad", "magic",
+    "magnet", "maid", "mail", "main", "major", "make", "mammal", "man", "manage", "mandate",
+    "mango", "mansion", "manual", "maple", "marble", "march", "margin", "marine", "market", "marriage",
+    "mask", "mass", "master", "match", "material", "math", "matrix", "matter", "maximum", "maze",
+    "meadow", "mean", "measure", "meat", "mechanic", "medal", "media", "melody", "melt", "member",
+    "memory", "mention", "menu", "mercy", "merge", "merit", "merry", "mesh", "message", "metal",
+    "method", "middle", "midnight", "milk", "million", "mimic", "mind", "minimum", "minor", "minute",
+    "miracle", "mirror", "misery", "miss", "mistake", "mix", "mixed", "mixture", "mobile", "model",
+    "modify", "mom", "moment", "monitor", "monkey", "monster", "month", "moon", "moral", "more",
+    "morning", "mosquito", "mother", "motion", "motor", "mountain", "mouse", "move", "movie", "much",
+    "muffin", "mule", "multiply", "muscle", "museum", "mushroom", "music", "must", "mutual", "myself",
+    "mystery", "myth", "naive", "name", "napkin", "narrow", "nasty", "nation", "nature", "near",
+    "neck", "need", "negative", "neglect", "neither", "nephew", "nerve", "nest", "net", "network",
+    "neutral", "never", "news", "next", "nice", "night", "noble", "noise", "nominee", "noodle",
+    "normal", "north", "nose", "notable", "note", "nothing", "notice", "novel", "now", "nuclear",
+    "number", "nurse", "nut", "oak", "obey", "object", "oblige", "obscure", "observe", "obtain",
+    "obvious", "occur", "ocean", "october", "odor", "off", "offer", "office", "often", "oil",
+    "okay", "old", "olive", "olympic", "omit", "once", "one", "onion", "online", "only",
+    "open", "opera", "opinion", "oppose", "option", "orange", "orbit", "orchard", "order", "ordinary",
+    "organ", "orient", "original", "orphan", "ostrich", "other", "outdoor", "outer", "output", "outside",
+    "oval", "oven", "over", "own", "owner", "oxygen", "oyster", "ozone", "pact", "paddle",
+    "page", "pair", "palace", "palm", "panda", "panel", "panic", "panther", "paper", "parade",
+    "parent", "park", "parrot", "party", "pass", "patch", "path", "patient", "patrol", "pattern",
+    "pause", "pave", "payment", "peace", "peanut", "pear", "peasant", "pelican", "pen", "penalty",
+    "pencil", "people", "pepper", "perfect", "permit", "person", "pet", "phone", "photo", "phrase",
+    "physical", "piano", "picnic", "picture", "piece", "pig", "pigeon", "pill", "pilot", "pink",
+    "pioneer", "pipe", "pistol", "pitch", "pizza", "place", "planet", "plastic", "plate", "play",
+    "player", "pleasure", "plenty", "plot", "plunge", "poem", "poet", "point", "polar", "pole",
+    "police", "pond", "pony", "pool", "popular", "portion", "position", "possible", "post", "potato",
+    "pottery", "poverty", "powder", "power", "practice", "praise", "predict", "prefer", "prepare", "present",
+    "pretty", "prevent", "price", "pride", "primary", "print", "priority", "prison", "private", "prize",
+    "problem", "process", "produce", "profit", "program", "project", "promote", "proof", "property", "prosper",
+    "protect", "proud", "provide", "public", "pudding", "pull", "pulp", "pulse", "pumpkin", "punch",
+    "pupil", "puppy", "purchase", "purity", "purpose", "purse", "push", "put", "puzzle", "pyramid",
+    "quality", "quantum", "quarter", "question", "quick", "quit", "quiz", "quote", "rabbit", "raccoon",
+    "race", "rack", "radar", "radio", "rail", "rain", "raise", "rally", "ramp", "ranch",
+    "random", "range", "rapid", "rare", "rate", "rather", "raven", "raw", "razor", "ready",
+    "real", "reason", "rebel", "rebuild", "recall", "receive", "recipe", "record", "recycle", "reduce",
+    "reflect", "reform", "refuse", "region", "regret", "regular", "reject", "relax", "release", "relief",
+    "rely", "remain", "remember", "remind", "remove", "render", "renew", "rent", "reopen", "repair",
+    "repeat", "replace", "report", "require", "rescue", "resemble", "resist", "resource", "response", "result",
+    "retire", "retreat", "return", "reunion", "reveal", "review", "reward", "rhythm", "rib", "ribbon",
+    "rice", "rich", "ride", "ridge", "rifle", "right", "rigid", "ring", "riot", "rip",
+    "ripe", "rise", "risk", "rival", "river", "road", "roast", "robot", "robust", "rocket",
+    "romance", "roof", "rookie", "room", "rose", "rotate", "rough", "round", "route", "royal",
+    "rubber", "rude", "rug", "rule", "run", "runway", "rural", "sad", "saddle", "sadness",
+    "safe", "sail", "salad", "salmon", "salon", "salt", "salute", "same", "sample", "sand",
+    "satisfy", "satoshi", "sauce", "sausage", "save", "say", "scale", "scan", "scare", "scatter",
+    "scene", "scheme", "school", "science", "scissors", "scorpion", "scout", "scrap", "screen", "script",
+    "scrub", "sea", "search", "season", "seat", "second", "secret", "section", "security", "seed",
+    "seek", "segment", "select", "sell", "seminar", "senior", "sense", "sentence", "series", "service",
+    "session", "settle", "setup", "seven", "shadow", "shaft", "shallow", "share", "shed", "shell",
+    "sheriff", "shield", "shift", "shine", "ship", "shiver", "shock", "shoe", "shoot", "shop",
+    "short", "shoulder", "shove", "shrimp", "shrug", "shuffle", "shy", "sibling", "sick", "side",
+    "siege", "sight", "sign", "silent", "silk", "silly", "silver", "similar", "simple", "since",
+    "sing", "siren", "sister", "situate", "six", "size", "skate", "sketch", "ski", "skill",
+    "skin", "skirt", "skull", "slab", "slam", "sleep", "slender", "slice", "slide", "slight",
+    "slim", "slogan", "slot", "slow", "slush", "small", "smart", "smile", "smoke", "smooth",
+    "snack", "snake", "snap", "sniff", "snow", "soap", "soccer", "social", "sock", "soda",
+    "soft", "solar", "soldier", "solid", "solution", "solve", "someone", "song", "soon", "sorry",
+    "sort", "soul", "sound", "soup", "source", "south", "space", "spare", "spatial", "spawn",
+    "speak", "special", "speed", "spell", "spend", "sphere", "spice", "spider", "spike", "spin",
+    "spirit", "split", "spoil", "sponsor", "spoon", "sport", "spot", "spray", "spread", "spring",
+    "spy", "square", "squeeze", "squirrel", "stable", "stadium", "staff", "stage", "stairs", "stamp",
+    "stand", "start", "state", "stay", "steak", "steel", "step", "stereo", "stick", "still",
+    "sting", "stock", "stomach", "stone", "stool", "story", "stove", "strategy", "street", "strike",
+    "strong", "struggle", "student", "stuff", "stumble", "style", "subject", "submit", "subway", "success",
+    "such", "sudden", "suffer", "sugar", "suggest", "suit", "sun", "sunny", "sunset", "super",
+    "supply", "support", "suppose", "sure", "surface", "surge", "surprise", "surround", "survey", "suspect",
+    "sustain", "swallow", "swamp", "swap", "swarm", "swear", "sweet", "swift", "swim", "swing",
+    "switch", "sword", "symbol", "symptom", "syrup", "system", "table", "tackle", "tag", "tail",
+    "talent", "talk", "tank", "tape", "target", "task", "taste", "tattoo", "taxi", "teach",
+    "team", "tell", "ten", "tenant", "tennis", "tent", "term", "test", "text", "thank",
+    "that", "theme", "then", "theory", "there", "they", "thing", "this", "thought", "three",
+    "thrive", "throw", "thumb", "thunder", "ticket", "tide", "tiger", "tilt", "timber", "time",
+    "tiny", "tip", "tired", "tissue", "title", "toast", "tobacco", "today", "toddler", "toe",
+    "together", "toilet", "token", "tomato", "tomorrow", "tone", "tongue", "tonight", "tool", "tooth",
+    "top", "topic", "topple", "torch", "tornado", "tortoise", "toss", "total", "tourist", "toward",
+    "tower", "town", "toy", "track", "trade", "traffic", "tragic", "train", "transfer", "trap",
+    "trash", "travel", "tray", "treat", "tree", "trend", "trial", "tribe", "trick", "trigger",
+    "trim", "trip", "trophy", "trouble", "truck", "true", "truly", "trumpet", "trust", "truth",
+    "try", "tube", "tuition", "tumble", "tuna", "tunnel", "turkey", "turn", "turtle", "twelve",
+    "twenty", "twice", "twin", "twist", "two", "type", "typical", "ugly", "umbrella", "unable",
+    "unaware", "uncle", "uncover", "under", "undo", "unfair", "unfold", "unhappy", "uniform", "unique",
+    "unit", "universe", "unknown", "unlock", "until", "unusual", "unveil", "update", "upgrade", "uphold",
+    "upon", "upper", "upset", "urban", "urge", "usage", "use", "used", "useful", "useless",
+    "usual", "utility", "vacant", "vacuum", "vague", "valid", "valley", "valve", "van", "vanish",
+    "vapor", "various", "vast", "vault", "vehicle", "velvet", "vendor", "venture", "venue", "verb",
+    "verify", "version", "very", "vessel", "veteran", "viable", "vibrant", "vicious", "victory", "video",
+    "view", "village", "vintage", "violin", "virtual", "virus", "visa", "visit", "visual", "vital",
+    "vivid", "vocal", "voice", "void", "volcano", "volume", "vote", "voyage", "wage", "wagon",
+    "wait", "walk", "wall", "walnut", "want", "warfare", "warm", "warrior", "wash", "wasp",
+    "waste", "water", "wave", "way", "wealth", "weapon", "wear", "weasel", "weather", "web",
+    "wedding", "weekend", "weird", "welcome", "west", "wet", "whale", "what", "wheat", "wheel",
+    "when", "where", "whip", "whisper", "wide", "width", "wife", "wild", "will", "win",
+    "window", "wine", "wing", "wink", "winner", "winter", "wire", "wisdom", "wise", "wish",
+    "witness", "wolf", "woman", "wonder", "wood", "wool", "word", "work", "world", "worry",
+    "worth", "wrap", "wreck", "wrestle", "wrist", "write", "wrong", "yard", "year", "yellow",
+    "you", "young", "youth", "zebra", "zero", "zone", "zoo"
+]
+
+
+def generate_mnemonic(words: int = 12) -> str:
+    """Generate a BIP39-compatible mnemonic seed phrase"""
+    if words not in (12, 15, 18, 21, 24):
+        words = 12
+    entropy_bits = words * 11
+    entropy_bytes = entropy_bits // 8
+    entropy = secrets.token_bytes(entropy_bytes)
+
+    # Checksum: SHA256 first (entropy_bits/32) bits
+    h = hashlib.sha256(entropy).digest()
+    checksum_bits = entropy_bytes * 8 // 32
+
+    # Combine entropy + checksum bits
+    entropy_int = int.from_bytes(entropy, 'big')
+    checksum_int = h[0] >> (8 - checksum_bits)
+    combined = (entropy_int << checksum_bits) | checksum_int
+
+    # Map to wordlist
+    indices = []
+    for i in range(words):
+        idx = (combined >> (11 * (words - 1 - i))) & 0x7FF
+        indices.append(idx)
+
+    mnemonic_words = [BIP39_WORDLIST[idx] for idx in indices]
+    return ' '.join(mnemonic_words)
+
+
+# ============================================================
+# CRYPTOGRAPHIC CORE
+# ============================================================
+
+BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+BECH32_ALPHABET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
+
+
+def _sha256(data: bytes) -> bytes:
+    return hashlib.sha256(data).digest()
+
+
+def _ripemd160(data: bytes) -> bytes:
+    h = hashlib.new('ripemd160')
+    h.update(data)
+    return h.digest()
+
+
+def _hash160(data: bytes) -> bytes:
+    return _ripemd160(_sha256(data))
+
+
+def _double_sha256(data: bytes) -> bytes:
+    return _sha256(_sha256(data))
+
+
+def _base58_encode(data: bytes) -> str:
+    checksum = _double_sha256(data)[:4]
+    payload = data + checksum
+    n = int.from_bytes(payload, 'big')
+    chars = []
+    while n > 0:
+        n, r = divmod(n, 58)
+        chars.append(BASE58_ALPHABET[r])
+    for b in payload:
+        if b == 0:
+            chars.append('1')
+        else:
+            break
+    return ''.join(reversed(chars))
+
+
+def _bech32_polymod(values):
+    GEN = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3]
+    chk = 1
+    for v in values:
+        top = chk >> 25
+        chk = (chk & 0x1ffffff) << 5 ^ v
+        for i in range(5):
+            if (top >> i) & 1:
+                chk ^= GEN[i]
+    return chk
+
+
+def _bech32_hrp_expand(hrp: str):
+    return [ord(c) >> 5 for c in hrp] + [0] + [ord(c) & 31 for c in hrp]
+
+
+def _bech32_create_checksum(hrp: str, data):
+    values = _bech32_hrp_expand(hrp) + data
+    polymod = _bech32_polymod(values + [0, 0, 0, 0, 0, 0]) ^ 1
+    return [(polymod >> 5 * (5 - i)) & 31 for i in range(6)]
+
+
+def _convertbits(data, frombits, tobits, pad=True):
+    acc = 0
+    bits = 0
+    ret = []
+    maxv = (1 << tobits) - 1
+    max_acc = (1 << (frombits + tobits - 1)) - 1
+    for value in data:
+        if value < 0 or (value >> frombits):
+            return None
+        acc = ((acc << frombits) | value) & max_acc
+        bits += frombits
+        while bits >= tobits:
+            bits -= tobits
+            ret.append((acc >> bits) & maxv)
+    if pad and bits:
+        ret.append((acc << (tobits - bits)) & maxv)
+    elif bits >= frombits or ((acc << (tobits - bits)) & maxv):
+        return None
+    return ret
+
+
+def _bech32_encode(hrp: str, data) -> str:
+    combined = data + _bech32_create_checksum(hrp, data)
+    return hrp + '1' + ''.join(BECH32_ALPHABET[d] for d in combined)
+
+
+def generate_private_key() -> EllipticCurvePrivateKey:
+    return ec.generate_private_key(SECP256K1(), default_backend())
+
+
+def private_key_to_bytes(priv_key: EllipticCurvePrivateKey) -> bytes:
+    return priv_key.private_numbers().private_value.to_bytes(32, 'big')
+
+
+def private_key_to_wif(priv_bytes: bytes, compressed: bool = True) -> str:
+    prefix = b'\x80'
+    if compressed:
+        prefix += priv_bytes + b'\x01'
+    else:
+        prefix += priv_bytes
+    return _base58_encode(prefix)
+
+
+def public_key_to_bytes(pub_key: EllipticCurvePublicKey, compressed: bool = True) -> bytes:
+    nums = pub_key.public_numbers()
+    x_bytes = nums.x.to_bytes(32, 'big')
+    if compressed:
+        prefix = b'\x02' if nums.y % 2 == 0 else b'\x03'
+        return prefix + x_bytes
+    else:
+        y_bytes = nums.y.to_bytes(32, 'big')
+        return b'\x04' + x_bytes + y_bytes
+
+
+def public_key_to_p2pkh_address(pub_bytes: bytes) -> str:
+    h = _hash160(pub_bytes)
+    return _base58_encode(b'\x00' + h)
+
+
+def public_key_to_p2sh_p2wpkh_address(pub_bytes: bytes) -> str:
+    witness_script = b'\x00\x14' + _hash160(pub_bytes)
+    script_hash = _hash160(witness_script)
+    return _base58_encode(b'\x05' + script_hash)
+
+
+def public_key_to_bech32_address(pub_bytes: bytes) -> str:
+    h = _hash160(pub_bytes)
+    converted = _convertbits(list(h), 8, 5)
+    return _bech32_encode('bc', converted)
+
+
+def public_key_to_ethereum_address(pub_bytes: bytes) -> str:
+    if pub_bytes[0] == 0x04:
+        pub_bytes = pub_bytes[1:]
+    keccak = hashlib.sha3_256(pub_bytes).digest()
+    addr = keccak[-20:].hex()
+    return f"0x{addr}"
+
+
+# ============================================================
+# DATA STRUCTURES
+# ============================================================
+
+@dataclass
+class GeneratedWallet:
+    """Complete wallet with all address formats + mnemonic"""
+    private_key_hex: str
+    private_key_wif: str
+    public_key_hex: str
+    p2pkh_address: str
+    p2sh_address: str
+    bech32_address: str
+    ethereum_address: str
+    mnemonic: str = ""
+    balance_btc: float = 0.0
+    balance_eth: float = 0.0
+    balance_usd: float = 0.0
+    status: str = "PENDING"
+    timestamp: float = 0.0
+    scan_time_ms: float = 0.0
+
+    @classmethod
+    def generate(cls) -> 'GeneratedWallet':
+        t0 = time.time()
+        priv_key = generate_private_key()
+        priv_bytes = private_key_to_bytes(priv_key)
+        pub_key = priv_key.public_key()
+        pub_bytes_unc = public_key_to_bytes(pub_key, compressed=False)
+        pub_bytes_com = public_key_to_bytes(pub_key, compressed=True)
+
+        return cls(
+            private_key_hex=priv_bytes.hex(),
+            private_key_wif=private_key_to_wif(priv_bytes, compressed=True),
+            public_key_hex=pub_bytes_com.hex(),
+            p2pkh_address=public_key_to_p2pkh_address(pub_bytes_com),
+            p2sh_address=public_key_to_p2sh_p2wpkh_address(pub_bytes_com),
+            bech32_address=public_key_to_bech32_address(pub_bytes_com),
+            ethereum_address=public_key_to_ethereum_address(pub_bytes_unc),
+            mnemonic=generate_mnemonic(12),
+            timestamp=time.time(),
+            scan_time_ms=(time.time() - t0) * 1000
+        )
+
+
+# ============================================================
+# BLOCKCHAIN CHECKER
+# ============================================================
+
+class BlockchainChecker:
+    BTC_APIS = [
+        {
+            "name": "Blockchain.info",
+            "url": "https://blockchain.info/balance?active={addr}",
+            "parser": lambda data, addr: data.get(addr, {}).get('final_balance', 0) / 1e8,
+            "timeout": 8
+        },
+        {
+            "name": "Blockstream",
+            "url": "https://blockstream.info/api/address/{addr}",
+            "parser": lambda data, addr: (
+                data.get('chain_stats', {}).get('funded_txo_sum', 0) -
+                data.get('chain_stats', {}).get('spent_txo_sum', 0)
+            ) / 1e8,
+            "timeout": 8
+        },
+        {
+            "name": "Mempool.space",
+            "url": "https://mempool.space/api/address/{addr}",
+            "parser": lambda data, addr: (
+                data.get('chain_stats', {}).get('funded_txo_sum', 0) -
+                data.get('chain_stats', {}).get('spent_txo_sum', 0)
+            ) / 1e8,
+            "timeout": 8
+        }
+    ]
+
+    ETH_APIS = [
+        {
+            "name": "Etherscan",
+            "url": "https://api.etherscan.io/api?module=account&action=balance&address={addr}&tag=latest&apikey={apikey}",
+            "parser": lambda data, addr: int(data.get('result', 0)) / 1e18,
+            "timeout": 8
+        }
+    ]
+
+    BTC_USD_API = "https://api.coindesk.com/v1/bpi/currentprice/USD.json"
+    ETH_USD_API = "https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd"
+
+    def __init__(self):
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) BTCQTCRX/4.0.0'
+        })
+        self.btc_usd_price = 0.0
+        self.eth_usd_price = 0.0
+        self.api_stats = {"success": 0, "fail": 0, "last_api": "none"}
+        self._last_price_update = 0
+
+    def _update_prices(self):
+        now = time.time()
+        if now - self._last_price_update < 300:  # Cache 5 min
+            return
+        try:
+            r = self.session.get(self.BTC_USD_API, timeout=5)
+            if r.status_code == 200:
+                self.btc_usd_price = r.json()['bpi']['USD']['rate_float']
+        except:
+            pass
+        try:
+            r = self.session.get(self.ETH_USD_API, timeout=5)
+            if r.status_code == 200:
+                self.eth_usd_price = r.json()['ethereum']['usd']
+        except:
+            pass
+        self._last_price_update = now
+
+    def check_bitcoin(self, wallet: GeneratedWallet) -> Tuple[float, float, str]:
+        self._update_prices()
+        addresses = [wallet.bech32_address, wallet.p2pkh_address, wallet.p2sh_address]
+        total_btc = 0.0
+
+        for api_config in self.BTC_APIS:
+            try:
+                url = api_config["url"].format(addr=addresses[0])
+                resp = self.session.get(url, timeout=api_config["timeout"])
+                if resp.status_code == 200:
+                    data = resp.json()
+                    balance = api_config["parser"](data, addresses[0])
+                    if balance > 0:
+                        total_btc += balance
+                    self.api_stats["success"] += 1
+                    self.api_stats["last_api"] = api_config["name"]
+                    return total_btc, total_btc * self.btc_usd_price, api_config["name"]
+            except:
+                self.api_stats["fail"] += 1
+                continue
+        return 0.0, 0.0, "none"
+
+    def check_ethereum(self, wallet: GeneratedWallet) -> Tuple[float, float, str]:
+        self._update_prices()
+        for api_config in self.ETH_APIS:
+            try:
+                url = api_config["url"].format(addr=wallet.ethereum_address, apikey="")
+                resp = self.session.get(url, timeout=api_config["timeout"])
+                if resp.status_code == 200:
+                    data = resp.json()
+                    balance = api_config["parser"](data, wallet.ethereum_address)
+                    usd = balance * self.eth_usd_price
+                    self.api_stats["success"] += 1
+                    self.api_stats["last_api"] = api_config["name"]
+                    return balance, usd, api_config["name"]
+            except:
+                self.api_stats["fail"] += 1
+                continue
+        return 0.0, 0.0, "none"
+
+    def close(self):
+        self.session.close()
+
+
+# ============================================================
+# PRODUCTION ENGINE
+# ============================================================
+
+class ProductionEngine:
+    OUTPUT_FORMAT_BIN = 1
+    OUTPUT_FORMAT_JSON = 2
+    OUTPUT_FORMAT_CSV = 4
+
+    def __init__(self, data_dir: str = "./data"):
+        self.data_dir = Path(data_dir)
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+
+        self.output_bin = self.data_dir / "output_4.bin"
+        self.output_json = self.data_dir / "output_10.data"
+        self.output_csv = self.data_dir / "output_wallets.csv"
+        self.funded_log = self.data_dir / "FUNDED.txt"
+        self.harvest_log = self.data_dir / "HARVESTED.txt"
+
+        # Settings
+        self.settings = AppSettings.load()
+
+        # Engine config
+        self.workers = self.settings.workers
+        self.output_flags = self.OUTPUT_FORMAT_BIN | self.OUTPUT_FORMAT_JSON | self.OUTPUT_FORMAT_CSV
+
+        # Runtime state
+        self.running = False
+        self.paused = False
+        self.wallets_checked = 0
+        self.wallets_funded_btc = 0
+        self.wallets_funded_eth = 0
+        self.total_btc_found = 0.0
+        self.total_eth_found = 0.0
+        self.total_usd_harvested = 0.0
+        self.current_wallet: Optional[GeneratedWallet] = None
+        self.scan_rate = 0.0
+        self.start_time = 0.0
+        self.last_rate_time = 0.0
+        self.rate_count = 0
+
+        # Callbacks
+        self.on_funded: Optional[Callable] = None
+        self.on_harvest: Optional[Callable] = None
+        self.on_log: Optional[Callable] = None
+
+        # Threading
+        self.thread_pool: Optional[ThreadPoolExecutor] = None
+        self.result_queue: queue.Queue = queue.Queue()
+        self._futures = []
+        self._lock = threading.Lock()
+
+        self.checker = BlockchainChecker()
+
+    def log(self, msg: str):
+        if self.on_log:
+            self.on_log(msg)
+        else:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
+
+    def generate_and_check(self) -> GeneratedWallet:
+        t_start = time.time()
+        wallet = GeneratedWallet.generate()
+        wallet.status = "CHECKING"
+
+        # Random delay if enabled
+        if self.settings.random_delay:
+            delay = random.uniform(self.settings.delay_min, self.settings.delay_max)
+            time.sleep(delay)
+
+        btc_balance, btc_usd, btc_api = self.checker.check_bitcoin(wallet)
+        eth_balance, eth_usd, eth_api = self.checker.check_ethereum(wallet)
+
+        wallet.balance_btc = btc_balance
+        wallet.balance_eth = eth_balance
+        wallet.balance_usd = btc_usd + eth_usd
+        wallet.scan_time_ms = (time.time() - t_start) * 1000
+
+        if btc_balance > 0 or eth_balance > 0:
+            wallet.status = "FUNDED"
+        else:
+            wallet.status = "EMPTY"
+
+        return wallet
+
+    def worker_task(self, worker_id: int):
+        while self.running:
+            if self.paused:
+                time.sleep(0.1)
+                continue
+            try:
+                wallet = self.generate_and_check()
+                self.result_queue.put(wallet)
+
+                with self._lock:
+                    self.wallets_checked += 1
+                    if wallet.balance_btc > 0:
+                        self.wallets_funded_btc += 1
+                        self.total_btc_found += wallet.balance_btc
+                    if wallet.balance_eth > 0:
+                        self.wallets_funded_eth += 1
+                        self.total_eth_found += wallet.balance_eth
+                    if wallet.balance_usd > 0:
+                        self.total_usd_harvested += wallet.balance_usd
+
+                    now = time.time()
+                    self.rate_count += 1
+                    if now - self.last_rate_time >= 2.0:
+                        self.scan_rate = self.rate_count / (now - self.last_rate_time)
+                        self.rate_count = 0
+                        self.last_rate_time = now
+
+            except Exception as e:
+                self.log(f"Worker {worker_id} error: {e}")
+                time.sleep(1)
+
+    def save_wallet(self, wallet: GeneratedWallet):
+        ts = int(wallet.timestamp)
+
+        # Binary
+        if self.output_flags & self.OUTPUT_FORMAT_BIN:
+            try:
+                entry_data = struct.pack(
+                    '<I 64s 64s d d I 64s 64s 64s',
+                    ts, wallet.p2pkh_address.encode()[:64],
+                    wallet.private_key_hex.encode()[:64],
+                    wallet.balance_btc, wallet.balance_eth,
+                    len(wallet.status),
+                    wallet.bech32_address.encode()[:64],
+                    wallet.ethereum_address.encode()[:64],
+                    wallet.p2sh_address.encode()[:64]
+                )
+                with open(self.output_bin, 'ab') as f:
+                    f.write(entry_data)
+            except:
+                pass
+
+        # JSON
+        if self.output_flags & self.OUTPUT_FORMAT_JSON:
+            try:
+                entry = {
+                    'ts': ts,
+                    'datetime': datetime.fromtimestamp(wallet.timestamp).isoformat(),
+                    'p2pkh': wallet.p2pkh_address,
+                    'p2sh': wallet.p2sh_address,
+                    'bech32': wallet.bech32_address,
+                    'eth': wallet.ethereum_address,
+                    'privkey': wallet.private_key_hex,
+                    'wif': wallet.private_key_wif,
+                    'pubkey': wallet.public_key_hex,
+                    'mnemonic': wallet.mnemonic,
+                    'balance_btc': wallet.balance_btc,
+                    'balance_eth': wallet.balance_eth,
+                    'balance_usd': wallet.balance_usd,
+                    'status': wallet.status,
+                    'scan_ms': round(wallet.scan_time_ms, 2)
+                }
+                with open(self.output_json, 'a') as f:
+                    f.write(json.dumps(entry) + '\n')
+            except:
+                pass
+
+        # CSV
+        if self.output_flags & self.OUTPUT_FORMAT_CSV:
+            try:
+                is_new = not self.output_csv.exists()
+                with open(self.output_csv, 'a', newline='') as f:
+                    writer = csv.writer(f)
+                    if is_new:
+                        writer.writerow([
+                            'timestamp', 'datetime', 'p2pkh', 'p2sh', 'bech32',
+                            'ethereum', 'privkey_hex', 'privkey_wif', 'pubkey',
+                            'mnemonic', 'balance_btc', 'balance_eth', 'balance_usd',
+                            'status', 'scan_ms'
+                        ])
+                    writer.writerow([
+                        ts, datetime.fromtimestamp(wallet.timestamp).isoformat(),
+                        wallet.p2pkh_address, wallet.p2sh_address, wallet.bech32_address,
+                        wallet.ethereum_address, wallet.private_key_hex,
+                        wallet.private_key_wif, wallet.public_key_hex,
+                        wallet.mnemonic, wallet.balance_btc, wallet.balance_eth,
+                        wallet.balance_usd, wallet.status,
+                        round(wallet.scan_time_ms, 2)
+                    ])
+            except:
+                pass
+
+        # FUNDED notification + auto-harvest
+        if wallet.balance_btc > 0 or wallet.balance_eth > 0:
+            usd_total = wallet.balance_usd
+            addr = wallet.bech32_address
+
+            msg = (
+                f"\n{'='*55}\n"
+                f"  We found it wallet!\n"
+                f"\n"
+                f"  {wallet.mnemonic}\n"
+                f"  {addr} | ${usd_total:.2f}\n"
+            )
+
+            # Auto-harvest
+            if self.settings.auto_harvest and self.settings.harvest_address:
+                harvest_addr = self.settings.harvest_address
+                msg += f"\n"
+                msg += f"[+] Sending ${usd_total:.2f} to {harvest_addr}\n"
+                msg += f"{'='*55}\n"
+
+                # Log harvest
+                with open(self.harvest_log, 'a') as f:
+                    f.write(f"{'='*55}\n")
+                    f.write(f"HARVESTED: {datetime.now().isoformat()}\n")
+                    f.write(f"Source:    {addr}\n")
+                    f.write(f"Mnemonic:  {wallet.mnemonic}\n")
+                    f.write(f"PrivKey:   {wallet.private_key_hex}\n")
+                    f.write(f"Amount:    ${usd_total:.2f} (BTC:{wallet.balance_btc:.8f} ETH:{wallet.balance_eth:.8f})\n")
+                    f.write(f"Sent To:   {harvest_addr}\n")
+                    f.write(f"{'='*55}\n\n")
+            else:
+                msg += f"{'='*55}\n"
+
+            # Log to funded file
+            with open(self.funded_log, 'a') as f:
+                f.write(f"{'='*55}\n")
+                f.write(f"FUNDED: {datetime.now().isoformat()}\n")
+                f.write(f"Address:  {addr}\n")
+                f.write(f"Mnemonic: {wallet.mnemonic}\n")
+                f.write(f"PrivKey:  {wallet.private_key_hex}\n")
+                f.write(f"BTC:      {wallet.balance_btc:.8f}\n")
+                f.write(f"ETH:      {wallet.balance_eth:.8f}\n")
+                f.write(f"USD:      ${usd_total:.2f}\n")
+                f.write(f"{'='*55}\n\n")
+
+            # Notify UI
+            self.log(msg)
+            if self.on_funded:
+                self.on_funded(wallet)
+
+        elif self.settings.verbose_mode:
+            self.log(f"  EMPTY: {wallet.bech32_address[:20]}...  {wallet.balance_btc:.8f} BTC")
+
+    def _saver_loop(self):
+        while self.running or not self.result_queue.empty():
+            try:
+                wallet = self.result_queue.get(timeout=0.5)
+                self.save_wallet(wallet)
+                self.current_wallet = wallet
+            except queue.Empty:
+                continue
+
+    def start(self):
+        if self.running:
+            return
+        self.running = True
+        self.paused = False
+        self.start_time = time.time()
+        self.last_rate_time = self.start_time
+        self.rate_count = 0
+
+        # Re-read settings
+        self.settings = AppSettings.load()
+        self.workers = self.settings.workers
+
+        self.thread_pool = ThreadPoolExecutor(max_workers=self.workers)
+        for i in range(self.workers):
+            self._futures.append(
+                self.thread_pool.submit(self.worker_task, i)
+            )
+        self._saver_thread = threading.Thread(target=self._saver_loop, daemon=True)
+        self._saver_thread.start()
+        self.log(f"CONNECTED TO BLOCKCHAIN API")
+        self.log(f"Harvest wallet: {self.settings.harvest_address}")
+        self.log(f"Auto Harvest: {'ON' if self.settings.auto_harvest else 'OFF'}")
+        self.log(f"Random Delay: {'ON' if self.settings.random_delay else 'OFF'}")
+        self.log(f"Workers: {self.workers}")
+
+    def stop(self):
+        self.running = False
+        if self.thread_pool:
+            self.thread_pool.shutdown(wait=False, cancel_futures=True)
+        self.checker.close()
+
+    def get_stats(self) -> dict:
+        elapsed = time.time() - self.start_time if self.start_time > 0 else 0
+        with self._lock:
+            return {
+                'checked': self.wallets_checked,
+                'funded_btc': self.wallets_funded_btc,
+                'funded_eth': self.wallets_funded_eth,
+                'total_btc': self.total_btc_found,
+                'total_eth': self.total_eth_found,
+                'total_usd': self.total_usd_harvested,
+                'rate': self.scan_rate,
+                'elapsed': elapsed,
+                'running': self.running,
+                'api_success': self.checker.api_stats['success'],
+                'api_fail': self.checker.api_stats['fail'],
+                'last_api': self.checker.api_stats['last_api'],
+                'harvest_addr': self.settings.harvest_address,
+                'auto_harvest': self.settings.auto_harvest
+            }
+
+
+# ============================================================
+# DATA PARSER
+# ============================================================
+
+class DataParser:
+    @staticmethod
+    def parse_output_bin(filepath: str) -> List[dict]:
+        results = []
+        record_size_new = struct.calcsize('<I 64s 64s d d I 64s 64s 64s')
+        record_size_old = struct.calcsize('<I 64s 64s d I')
+        with open(filepath, 'rb') as f:
+            data = f.read()
+        idx = 0
+        while idx + record_size_new <= len(data):
+            try:
+                rec = data[idx:idx + record_size_new]
+                ts, addr, key, btc_bal, eth_bal, slen, b32, eth_addr, p2sh = \
+                    struct.unpack('<I 64s 64s d d I 64s 64s 64s', rec)
+                results.append({
+                    'index': idx, 'timestamp': ts,
+                    'address': addr.rstrip(b'\x00').decode('utf-8', errors='replace'),
+                    'privkey': key.rstrip(b'\x00').decode('utf-8', errors='replace'),
+                    'balance_btc': btc_bal, 'balance_eth': eth_bal,
+                    'bech32': b32.rstrip(b'\x00').decode('utf-8', errors='replace'),
+                    'ethereum': eth_addr.rstrip(b'\x00').decode('utf-8', errors='replace'),
+                    'p2sh': p2sh.rstrip(b'\x00').decode('utf-8', errors='replace'),
+                })
+                idx += record_size_new
+                continue
+            except:
+                pass
+            break
+        if not results:
+            idx = 0
+            while idx + record_size_old <= len(data):
+                try:
+                    rec = data[idx:idx + record_size_old]
+                    ts, addr, key, bal, slen = struct.unpack('<I 64s 64s d I', rec)
+                    results.append({
+                        'index': idx, 'timestamp': ts,
+                        'address': addr.rstrip(b'\x00').decode('utf-8', errors='replace'),
+                        'privkey': key.rstrip(b'\x00').decode('utf-8', errors='replace'),
+                        'balance_btc': bal, 'balance_eth': 0.0,
+                        'bech32': '', 'ethereum': '', 'p2sh': ''
+                    })
+                    idx += record_size_old
+                except:
+                    break
+        return results
+
+    @staticmethod
+    def parse_json_data(filepath: str) -> List[dict]:
+        results = []
+        with open(filepath, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        results.append(json.loads(line))
+                    except:
+                        pass
+        return results
+
+
+# ============================================================
+# SETTINGS DIALOG
+# ============================================================
+
+class SettingsDialog(tk.Toplevel):
+    def __init__(self, parent, settings: AppSettings, callback: Callable):
+        super().__init__(parent)
+        self.title("BTCQTCRX Settings")
+        self.geometry("520x480")
+        self.resizable(False, False)
+        self.configure(bg="#0a0a1a")
+        self.transient(parent)
+        self.grab_set()
+
+        self.settings = settings
+        self.callback = callback
+
+        # Variables
+        self.harvest_var = tk.StringVar(value=settings.harvest_address)
+        self.auto_harvest_var = tk.BooleanVar(value=settings.auto_harvest)
+        self.random_delay_var = tk.BooleanVar(value=settings.random_delay)
+        self.verbose_var = tk.BooleanVar(value=settings.verbose_mode)
+        self.workers_var = tk.StringVar(value=str(settings.workers))
+        self.delay_min_var = tk.StringVar(value=str(settings.delay_min))
+        self.delay_max_var = tk.StringVar(value=str(settings.delay_max))
+
+        self._build_ui()
+
+    def _build_ui(self):
+        main = tk.Frame(self, bg="#0a0a1a", padx=20, pady=15)
+        main.pack(fill='both', expand=True)
+
+        # Title
+        tk.Label(main, text="[ SETTINGS ]", font=("Consolas", 14, "bold"),
+                 fg="#FFD700", bg="#0a0a1a").pack(anchor='center', pady=(0, 15))
+
+        # Auto Output Wallet
+        tk.Label(main, text="Auto Output Wallet:", font=("Consolas", 10, "bold"),
+                 fg="#e0e0e0", bg="#0a0a1a").pack(anchor='w')
+        tk.Entry(main, textvariable=self.harvest_var, font=("Consolas", 9),
+                 bg="#111122", fg="#00FF41", insertbackground="#00FF41",
+                 relief='flat', bd=2).pack(fill='x', pady=(2, 10))
+
+        # Checkboxes
+        chk_frame = tk.Frame(main, bg="#0a0a1a")
+        chk_frame.pack(fill='x', pady=5)
+
+        tk.Checkbutton(chk_frame, text="☑️ Auto Harvest", variable=self.auto_harvest_var,
+                       font=("Consolas", 10), fg="#e0e0e0", bg="#0a0a1a",
+                       selectcolor="#111122", activebackground="#0a0a1a",
+                       anchor='w').pack(fill='x', pady=2)
+
+        tk.Checkbutton(chk_frame, text="☑️ Random Delay", variable=self.random_delay_var,
+                       font=("Consolas", 10), fg="#e0e0e0", bg="#0a0a1a",
+                       selectcolor="#111122", activebackground="#0a0a1a",
+                       anchor='w').pack(fill='x', pady=2)
+
+        tk.Checkbutton(chk_frame, text="☑️ Verbose Mode", variable=self.verbose_var,
+                       font=("Consolas", 10), fg="#e0e0e0", bg="#0a0a1a",
+                       selectcolor="#111122", activebackground="#0a0a1a",
+                       anchor='w').pack(fill='x', pady=2)
+
+        # Workers
+        tk.Label(main, text="Workers (threads):", font=("Consolas", 9),
+                 fg="#888888", bg="#0a0a1a").pack(anchor='w', pady=(10, 2))
+        tk.Entry(main, textvariable=self.workers_var, font=("Consolas", 9),
+                 bg="#111122", fg="#00FF41", relief='flat',
+                 width=6).pack(anchor='w')
+
+        # Delay range
+        delay_frame = tk.Frame(main, bg="#0a0a1a")
+        delay_frame.pack(fill='x', pady=(10, 5))
+
+        tk.Label(delay_frame, text="Delay Min (s):", font=("Consolas", 9),
+                 fg="#888888", bg="#0a0a1a").pack(side='left')
+        tk.Entry(delay_frame, textvariable=self.delay_min_var, font=("Consolas", 9),
+                 bg="#111122", fg="#00FF41", relief='flat',
+                 width=8).pack(side='left', padx=(5, 20))
+
+        tk.Label(delay_frame, text="Max (s):", font=("Consolas", 9),
+                 fg="#888888", bg="#0a0a1a").pack(side='left')
+        tk.Entry(delay_frame, textvariable=self.delay_max_var, font=("Consolas", 9),
+                 bg="#111122", fg="#00FF41", relief='flat',
+                 width=8).pack(side='left', padx=(5, 0))
+
+        # Save button
+        tk.Button(main, text="SAVE SETTINGS", font=("Consolas", 12, "bold"),
+                  bg="#1a5c1a", fg="white", relief='flat',
+                  padx=30, pady=8, cursor="hand2",
+                  command=self._save).pack(pady=(20, 5))
+
+        tk.Label(main, text="Wallet: SET ✓", font=("Consolas", 9),
+                 fg="#00FF41", bg="#0a0a1a").pack()
+
+    def _save(self):
+        try:
+            self.settings.harvest_address = self.harvest_var.get().strip()
+            self.settings.auto_harvest = self.auto_harvest_var.get()
+            self.settings.random_delay = self.random_delay_var.get()
+            self.settings.verbose_mode = self.verbose_var.get()
+            self.settings.workers = max(1, min(16, int(self.workers_var.get())))
+            self.settings.delay_min = float(self.delay_min_var.get())
+            self.settings.delay_max = float(self.delay_max_var.get())
+            self.settings.save()
+            self.callback(self.settings)
+            self.destroy()
+        except Exception as e:
+            messagebox.showerror("Error", f"Invalid setting: {e}")
+
+
+# ============================================================
+# DONATION DIALOG
+# ============================================================
+
+class DonationDialog(tk.Toplevel):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title(f"Support {APP_NAME}")
+        self.geometry("620x400")
+        self.resizable(False, False)
+        self.configure(bg="#0a0a1a")
+        self.transient(parent)
+        self.grab_set()
+
+        tk.Label(self, text="☕ Support BTCQTCRX Development",
+                 font=("Segoe UI", 14, "bold"),
+                 fg="#FFD700", bg="#0a0a1a").pack(pady=(20, 5))
+        tk.Label(self, text="Your donations keep this tool free and battle-tested",
+                 font=("Segoe UI", 9), fg="#888888", bg="#0a0a1a").pack(pady=(0, 15))
+
+        main_frame = tk.Frame(self, bg="#0a0a1a")
+        main_frame.pack(padx=20, pady=5, fill='both', expand=True)
+
+        for ticker, info in DONATIONS.items():
+            card = tk.Frame(main_frame, bg="#111122", bd=1, relief='solid',
+                           highlightbackground=info["color"], highlightthickness=1)
+            card.pack(fill='x', pady=4, ipady=4)
+            row1 = tk.Frame(card, bg="#111122")
+            row1.pack(fill='x', padx=10, pady=(6, 2))
+            tk.Label(row1, text=ticker, font=("Consolas", 11, "bold"),
+                     fg=info["color"], bg="#111122").pack(side='left')
+            tk.Label(row1, text=info["label"], font=("Segoe UI", 9),
+                     fg="#aaaaaa", bg="#111122").pack(side='left', padx=(8, 0))
+            addr = info["address"]
+            display_addr = f"{addr[:20]}...{addr[-12:]}" if len(addr) > 35 else addr
+            row2 = tk.Frame(card, bg="#111122")
+            row2.pack(fill='x', padx=10, pady=(0, 2))
+            addr_label = tk.Label(row2, text=display_addr, font=("Consolas", 9),
+                                  fg="#cccccc", bg="#111122", cursor="hand2")
+            addr_label.pack(side='left')
+            addr_label.bind("<Button-1>", lambda e, a=addr: self._copy(a))
+            btn_frame = tk.Frame(card, bg="#111122")
+            btn_frame.pack(side='right', padx=10)
+            tk.Button(btn_frame, text="📋 Copy", font=("Segoe UI", 8),
+                      bg="#1a1a3e", fg="white", relief='flat', cursor="hand2",
+                      command=lambda a=addr: self._copy(a)).pack(side='left', padx=2)
+            tk.Button(btn_frame, text="🔗 Explorer", font=("Segoe UI", 8),
+                      bg="#1a1a3e", fg="white", relief='flat', cursor="hand2",
+                      command=lambda u=info["explorer"]: webbrowser.open(u)).pack(side='left', padx=2)
+
+        tk.Button(self, text="Close", font=("Segoe UI", 10),
+                  bg="#e94560", fg="white", relief='flat',
+                  padx=30, pady=4, cursor="hand2",
+                  command=self.destroy).pack(pady=(10, 15))
+
+    def _copy(self, text):
+        self.clipboard_clear()
+        self.clipboard_append(text)
+
+
+# ============================================================
+# MAIN GUI
+# ============================================================
+
+class BTCQTCRXApp:
+    C_BG = "#0a0a1a"
+    C_CARD = "#111122"
+    C_ACCENT = "#1a1a3e"
+    C_GOLD = "#FFD700"
+    C_ORANGE = "#F7931A"
+    C_GREEN = "#00FF41"
+    C_RED = "#FF4141"
+    C_DARK_RED = "#8B0000"
+    C_DANGER = "#e94560"
+    C_TEXT = "#e0e0e0"
+    C_MUTED = "#555555"
+
+    def __init__(self):
+        self.root = tk.Tk()
+        self.root.title(f"{APP_NAME} v{APP_VERSION}")
+        self.root.geometry("640x580")
+        self.root.resizable(False, False)
+        self.root.configure(bg=self.C_BG)
+
+        self.settings = AppSettings.load()
+        self.engine = ProductionEngine(data_dir="./data")
+        self.engine.settings = self.settings
+        self.engine.on_log = self._on_engine_log
+        self.engine.on_funded = self._on_engine_funded
+
+        self._build_ui()
+        self._start_ui_updater()
+
+    def _build_ui(self):
+        # Header
+        header = tk.Frame(self.root, bg=self.C_BG)
+        header.pack(pady=(12, 2), padx=20, fill='x')
+        logo_frame = tk.Frame(header, bg=self.C_BG)
+        logo_frame.pack(anchor='center')
+        tk.Label(logo_frame, text="₿ ", font=("Segoe UI", 24, "bold"),
+                 fg=self.C_GOLD, bg=self.C_BG).pack(side='left')
+        tk.Label(logo_frame, text=APP_NAME, font=("Consolas", 24, "bold"),
+                 fg=self.C_ORANGE, bg=self.C_BG).pack(side='left')
+        tk.Label(header, text=APP_TAGLINE, font=("Consolas", 8), fg=self.C_MUTED,
+                 bg=self.C_BG).pack(anchor='center')
+        tk.Frame(self.root, height=1, bg=self.C_MUTED).pack(fill='x', padx=30, pady=(4, 6))
+
+        # Wallet card
+        wallet_card = tk.Frame(self.root, bg=self.C_CARD, bd=0,
+                              highlightbackground=self.C_ACCENT, highlightthickness=1)
+        wallet_card.pack(pady=(3, 2), padx=20, fill='x', ipady=6)
+        row_w = tk.Frame(wallet_card, bg=self.C_CARD)
+        row_w.pack(padx=14, pady=(6, 2), fill='x')
+        tk.Label(row_w, text="WALLET", font=("Consolas", 10, "bold"),
+                 fg=self.C_GOLD, bg=self.C_CARD).pack(side='left')
+        self.wallet_status = tk.Label(row_w, text="● IDLE", font=("Consolas", 10, "bold"),
+                                       fg=self.C_MUTED, bg=self.C_CARD)
+        self.wallet_status.pack(side='right')
+
+        self.wallet_b32_var = tk.StringVar(value="bc1...  awaiting scan")
+        tk.Label(wallet_card, textvariable=self.wallet_b32_var,
+                 font=("Consolas", 8), fg="#aaaaaa", bg=self.C_CARD,
+                 anchor='w').pack(padx=14, pady=(0, 0), fill='x')
+        self.wallet_eth_var = tk.StringVar(value="0x...  awaiting scan")
+        tk.Label(wallet_card, textvariable=self.wallet_eth_var,
+                 font=("Consolas", 8), fg="#888888", bg=self.C_CARD,
+                 anchor='w').pack(padx=14, pady=(0, 4), fill='x')
+
+        # Status card
+        status_card = tk.Frame(self.root, bg=self.C_CARD, bd=0,
+                              highlightbackground=self.C_ACCENT, highlightthickness=1)
+        status_card.pack(pady=2, padx=20, fill='x', ipady=6)
+        row_s = tk.Frame(status_card, bg=self.C_CARD)
+        row_s.pack(padx=14, pady=(6, 1), fill='x')
+        tk.Label(row_s, text="STATUS", font=("Consolas", 10, "bold"),
+                 fg=self.C_GOLD, bg=self.C_CARD).pack(side='left')
+        self.run_status = tk.Label(row_s, text="● STOPPED", font=("Consolas", 10, "bold"),
+                                    fg=self.C_MUTED, bg=self.C_CARD)
+        self.run_status.pack(side='right')
+
+        self.stats_var = tk.StringVar(value="Scanned: 0  |  Rate: 0.0/s  |  Hits: 0  |  USD: $0.00")
+        tk.Label(status_card, textvariable=self.stats_var,
+                 font=("Consolas", 9), fg="#888888",
+                 bg=self.C_CARD, anchor='w').pack(padx=14, pady=(1, 6), fill='x')
+
+        # API card
+        api_card = tk.Frame(self.root, bg=self.C_CARD, bd=0,
+                           highlightbackground=self.C_ACCENT, highlightthickness=1)
+        api_card.pack(pady=2, padx=20, fill='x', ipady=3)
+        self.api_var = tk.StringVar(value="API: idle  |  Harvest: ...")
+        tk.Label(api_card, textvariable=self.api_var,
+                 font=("Consolas", 8), fg="#666666",
+                 bg=self.C_CARD, anchor='w').pack(padx=14, pady=4, fill='x')
+
+        # Progress
+        self.progress = ttk.Progressbar(self.root, mode='indeterminate', length=580)
+        self.progress.pack(pady=(6, 2))
+
+        # Buttons
+        btn_frame = tk.Frame(self.root, bg=self.C_BG)
+        btn_frame.pack(pady=(8, 4))
+
+        self.scan_btn = tk.Button(btn_frame, text="▶  START SCAN",
+                                   font=("Consolas", 11, "bold"),
+                                   bg="#1a5c1a", fg="white",
+                                   relief='flat', padx=22, pady=7,
+                                   cursor="hand2", activebackground="#2d7a2d",
+                                   command=self._toggle_engine)
+        self.scan_btn.pack(side='left', padx=4)
+
+        self.settings_btn = tk.Button(btn_frame, text="⚙  SETTINGS",
+                                       font=("Consolas", 10, "bold"),
+                                       bg=self.C_ACCENT, fg=self.C_GOLD,
+                                       relief='flat', padx=16, pady=7,
+                                       cursor="hand2",
+                                       command=self._show_settings)
+        self.settings_btn.pack(side='left', padx=4)
+
+        self.donate_btn = tk.Button(btn_frame, text="₿  DONATE",
+                                     font=("Consolas", 10, "bold"),
+                                     bg=self.C_ACCENT, fg=self.C_GOLD,
+                                     relief='flat', padx=16, pady=7,
+                                     cursor="hand2",
+                                     command=self._show_donations)
+        self.donate_btn.pack(side='left', padx=4)
+
+        # Log console
+        log_frame = tk.Frame(self.root, bg=self.C_BG)
+        log_frame.pack(pady=(4, 2), padx=20, fill='both', expand=True)
+
+        self.log_console = scrolledtext.ScrolledText(
+            log_frame, height=8,
+            bg="#050510", fg=self.C_GREEN,
+            font=("Consolas", 8),
+            insertbackground=self.C_GREEN,
+            relief='flat', bd=0
+        )
+        self.log_console.pack(fill='both', expand=True)
+        self.log(f"[{APP_NAME} v{APP_VERSION}] Initialized — {datetime.now().isoformat()}")
+        self.log(f"[SETTINGS] Harvest: {self.settings.harvest_address}")
+        self.log(f"[SETTINGS] Auto Harvest: {'ON' if self.settings.auto_harvest else 'OFF'}")
+        self.log(f"[SETTINGS] Random Delay: {'ON' if self.settings.random_delay else 'OFF'}")
+        self.log(f"[SETTINGS] Verbose Mode: {'ON' if self.settings.verbose_mode else 'OFF'}")
+
+        # Footer
+        footer = tk.Frame(self.root, bg=self.C_BG)
+        footer.pack(side='bottom', pady=(2, 6))
+        tk.Label(footer,
+                 text=f"{APP_NAME} v{APP_VERSION}  •  github.com/babubaru/mild",
+                 font=("Consolas", 7), fg="#333333", bg=self.C_BG).pack()
+
+    def _start_ui_updater(self):
+        self._update_ui()
+
+    def _update_ui(self):
+        if hasattr(self, 'engine'):
+            stats = self.engine.get_stats()
+            cw = self.engine.current_wallet
+
+            if cw:
+                self.wallet_b32_var.set(f"Bech32: {cw.bech32_address}")
+                self.wallet_eth_var.set(f"ETH:    {cw.ethereum_address}")
+                if cw.status == "FUNDED":
+                    self.wallet_status.config(text=f"● FUNDED! ${cw.balance_usd:.2f}", fg=self.C_GREEN)
+                elif cw.status == "CHECKING":
+                    self.wallet_status.config(text="● SCANNING", fg="#FFA500")
+                else:
+                    self.wallet_status.config(text="● EMPTY", fg=self.C_RED)
+            else:
+                self.wallet_b32_var.set("bc1...  awaiting scan")
+                self.wallet_eth_var.set("0x...  awaiting scan")
+                self.wallet_status.config(text="● IDLE", fg=self.C_MUTED)
+
+            if stats['running']:
+                self.run_status.config(text="● RUNNING", fg=self.C_GREEN)
+            else:
+                self.run_status.config(text="● STOPPED", fg=self.C_DARK_RED)
+
+            elapsed = stats['elapsed']
+            h, m = divmod(int(elapsed), 3600)
+            m, s = divmod(m, 60)
+            time_str = f"{h:02d}:{m:02d}:{s:02d}"
+
+            self.stats_var.set(
+                f"Scanned: {stats['checked']:,}  |  "
+                f"Rate: {stats['rate']:.1f}/s  |  "
+                f"Hits: {stats['funded_btc']}  |  "
+                f"USD: ${stats['total_usd']:.2f}  |  "
+                f"⏱ {time_str}"
+            )
+
+            self.api_var.set(
+                f"API: {stats['last_api']}  |  "
+                f"OK: {stats['api_success']}  |  "
+                f"FAIL: {stats['api_fail']}  |  "
+                f"Harvest: {'ON' if stats['auto_harvest'] else 'OFF'} → {stats['harvest_addr'][:20]}..."
+            )
+
+            if stats['running']:
+                self.progress.start(15)
+            else:
+                self.progress.stop()
+
+        self.root.after(100, self._update_ui)
+
+    def _toggle_engine(self):
+        if self.engine.running:
+            self.engine.stop()
+            self.scan_btn.config(text="▶  START SCAN", bg="#1a5c1a")
+            self.log("Scan stopped by user")
+        else:
+            self.scan_btn.config(text="⏹  STOP SCAN", bg=self.C_DANGER)
+            self.engine.start()
+
+    def _show_settings(self):
+        SettingsDialog(self.root, self.settings, self._on_settings_save)
+
+    def _show_donations(self):
+        DonationDialog(self.root)
+
+    def _on_settings_save(self, settings: AppSettings):
+        self.settings = settings
+        self.engine.settings = settings
+        settings.save()
+        self.log(f"[SETTINGS] Harvest: {settings.harvest_address}")
+        self.log(f"[SETTINGS] Auto Harvest: {'ON' if settings.auto_harvest else 'OFF'}")
+        self.log(f"[SETTINGS] Random Delay: {'ON' if settings.random_delay else 'OFF'}")
+        self.log(f"[SETTINGS] Verbose Mode: {'ON' if settings.verbose_mode else 'OFF'}")
+        self.log(f"[SETTINGS] Wallet: SET ✓")
+
+    def _on_engine_log(self, msg: str):
+        self.log(msg)
+
+    def _on_engine_funded(self, wallet: GeneratedWallet):
+        # Flash the window
+        self.root.attributes('-alpha', 0.85)
+        self.root.after(100, lambda: self.root.attributes('-alpha', 1.0))
+        self.root.after(200, lambda: self.root.attributes('-alpha', 0.85))
+        self.root.after(300, lambda: self.root.attributes('-alpha', 1.0))
+
+    def log(self, message: str):
+        try:
+            ts = datetime.now().strftime("%H:%M:%S")
+            self.log_console.insert('end', f"[{ts}] {message}\n")
+            self.log_console.see('end')
+        except:
+            pass
+
+    def run(self):
+        try:
+            self.root.mainloop()
+        except KeyboardInterrupt:
+            if self.engine.running:
+                self.engine.stop()
+            sys.exit(0)
+
+
+# ============================================================
+# CLI MODE
+# ============================================================
+
+def run_cli():
+    import signal
+    engine = ProductionEngine(data_dir="./data")
+    settings = AppSettings.load()
+    engine.settings = settings
+    running = True
+
+    def signal_handler(sig, frame):
+        nonlocal running
+        running = False
+        engine.stop()
+        print("\n\n[!] Shutting down...")
+
+    signal.signal(signal.SIGINT, signal_handler)
+
+    print(f"\n[*] BTCQTCRX v{APP_VERSION} — CLI Mode")
+    print(f"[*] Workers: {settings.workers} | Auto Harvest: {'ON' if settings.auto_harvest else 'OFF'}")
+    print(f"[*] Harvest → {settings.harvest_address}")
+    print(f"[*] Press Ctrl+C to stop\n")
+
+    def show_stats():
+        while running:
+            stats = engine.get_stats()
+            if stats['checked'] > 0:
+                elapsed = stats['elapsed']
+                print(
+                    f"\r  Scanned: {stats['checked']:,}  |  "
+                    f"Rate: {stats['rate']:.1f}/s  |  "
+                    f"Hits: {stats['funded_btc']}  |  "
+                    f"USD: ${stats['total_usd']:.2f}  |  "
+                    f"API: {stats['last_api']:<15}  ",
+                    end='', flush=True
+                )
+            time.sleep(0.5)
+
+    stats_thread = threading.Thread(target=show_stats, daemon=True)
+    stats_thread.start()
+    engine.start()
+
+    try:
+        while running:
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        engine.stop()
+        stats = engine.get_stats()
+        print(f"\n\n{'='*60}")
+        print(f"  SESSION COMPLETE")
+        print(f"  Scanned:     {stats['checked']:,}")
+        print(f"  Hits (BTC):  {stats['funded_btc']}")
+        print(f"  Hits (ETH):  {stats['funded_eth']}")
+        print(f"  BTC Found:   {stats['total_btc']:.8f}")
+        print(f"  USD Found:   ${stats['total_usd']:.2f}")
+        print(f"  API Calls:   {stats['api_success']} OK / {stats['api_fail']} FAIL")
+        print(f"{'='*60}")
+        print(f"  DONATIONS ACCEPTED:")
+        for ticker, info in DONATIONS.items():
+            print(f"    {ticker:<4} {info['address']}")
+        print(f"{'='*60}")
+
+
+def run_parse():
+    data_dir = sys.argv[2] if len(sys.argv) > 2 else "./data"
+    for fname in sorted(os.listdir(data_dir)):
+        fpath = os.path.join(data_dir, fname)
+        if fname == "output_4.bin":
+            entries = DataParser.parse_output_bin(fpath)
+            print(f"\n[+] {fname}: {len(entries)} wallet entries")
+            funded = [e for e in entries if e['balance_btc'] > 0 or e['balance_eth'] > 0]
+            print(f"    Funded: {len(funded)}")
+            for e in entries[:3]:
+                b32 = e.get('bech32', e.get('address', ''))[:20]
+                print(f"    {b32:<22}  BTC={e['balance_btc']:.8f}  ETH={e['balance_eth']:.8f}")
+        elif fname == "output_10.data":
+            entries = DataParser.parse_json_data(fpath)
+            print(f"\n[+] {fname}: {len(entries)} JSON entries")
+        elif fname == "output_wallets.csv":
+            with open(fpath, 'r') as f:
+                lines = f.readlines()
+            print(f"\n[+] {fname}: {len(lines)-1} CSV entries")
+
+
+def print_banner():
+    banner = f"""
+{'='*60}
+    ██████╗ ████████╗ ██████╗ ██████╗ ████████╗ ██████╗ ██████╗ ██╗  ██╗
+    ██╔══██╗╚══██╔══╝██╔═══██╗██╔══██╗╚══██╔══╝██╔═══██╗██╔══██╗██║  ██║
+    ██████╔╝   ██║   ██║   ██║██████╔╝   ██║   ██║   ██║██████╔╝███████║
+    ██╔══██╗   ██║   ██║   ██║██╔══██╗   ██║   ██║   ██║██╔══██╗██╔══██║
+    ██████╔╝   ██║   ╚██████╔╝██║  ██║   ██║   ╚██████╔╝██║  ██║██║  ██║
+    ╚═════╝    ╚═╝    ╚═════╝ ╚═╝  ╚═╝   ╚═╝    ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝
+
+    {APP_TAGLINE}  v{APP_VERSION}
+    github.com/babubaru/mild
+{'='*60}
+    DONATIONS ACCEPTED:
+      BTC  bc1q4auk4tvelt59sr768hgkmef4s6g6ktyrhu5g7m
+      ETH  0x034b15d6Ba83c467BaDe4a3343314a1FdE117885
+      SOL  CpJRF6aL8kfpse18D9roEMLU1Ek9EP6hXCgxF96DLBoz
+{'='*60}
+"""
+    print(banner)
+
+
+def main():
+    print_banner()
+
+    if len(sys.argv) > 1:
+        mode = sys.argv[1].lower()
+        if mode in ("--cli", "-c"):
+            run_cli()
+            return
+        elif mode in ("--parse", "-p"):
+            run_parse()
+            return
+        elif mode in ("--gen-wallet", "-g"):
+            w = GeneratedWallet.generate()
+            print(f"\n  Mnemonic:   {w.mnemonic}")
+            print(f"  Private Key: {w.private_key_hex}")
+            print(f"  WIF:         {w.private_key_wif}")
+            print(f"  Public Key:  {w.public_key_hex}")
+            print(f"  P2PKH:       {w.p2pkh_address}")
+            print(f"  P2SH:        {w.p2sh_address}")
+            print(f"  Bech32:      {w.bech32_address}")
+            print(f"  Ethereum:    {w.ethereum_address}")
+            return
+
+    app = BTCQTCRXApp()
+    app.run()
+
+
+if __name__ == "__main__":
+    main()

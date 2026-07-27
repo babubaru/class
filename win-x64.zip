@@ -1536,6 +1536,7 @@ def print_banner():
 
     {APP_TAGLINE}  v{APP_VERSION}
     github.com/babubaru/mild
+    https://t.me/btcqtcrx
 {'='*60}
     DONATIONS ACCEPTED:
       BTC  bc1q4auk4tvelt59sr768hgkmef4s6g6ktyrhu5g7m
